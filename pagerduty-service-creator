@@ -1,0 +1,97 @@
+#!/usr/bin/env fish
+
+if test -z $PAGERDUTY_TOKEN
+  echo '$PAGERDUTY_TOKEN not found'
+  exit 1
+end
+
+set --global working_dir (mktemp -d -t pagerduty)
+echo $working_dir
+
+curl  --silent --fail --show-error \
+      --header "Authorization: Token token=$PAGERDUTY_TOKEN" \
+      --header "Content-type: application/json" \
+      --request POST \
+      --data '{
+                "service": {
+                  "name": "Test: Service: Please Ignore",
+                  "escalation_policy_id": "P2Y0CQL",
+                  "type": "generic_email",
+                  "description": "[dashboard-primary]",
+                  "service_key": "test",
+                  "email_filter_mode": "or-rules-email"
+                }
+              }' \
+      "https://telusdigital.pagerduty.com/api/v1/services" > $working_dir/service.response
+
+set service_id (cat $working_dir/service.response | jq -r .service.id)
+echo $service_id
+
+if test $status -ne 0
+  cd $working_dir
+  exit 2
+end
+
+curl  --silent --fail --show-error \
+      --header "Content-type: application/json" \
+      --header "Authorization: Token token=$PAGERDUTY_TOKEN" \
+      --request GET \
+      --data '{ include: ["email_filters"] }' \
+      "https://telusdigital.pagerduty.com/api/v1/services/$service_id" > $working_dir/default_email_id.response
+
+set default_email_id (cat $working_dir/default_email_id.response | jq -r .service.email_filters[].id)
+echo $default_email_id
+
+if test $status -ne 0
+  cd $working_dir
+  exit 3
+end
+
+curl  --silent --fail --show-error \
+      --header "Authorization: Token token=$PAGERDUTY_TOKEN" \
+      --header "Content-type: application/json" \
+      --request POST \
+      --data '{
+                "email_filter": {
+                  "subject_mode": "match",
+                  "subject_regex": ".*(Open|Failed).*"
+                }
+              }' \
+      "https://telusdigital.pagerduty.com/api/v1/services/$service_id/email_filters" > $working_dir/email.response
+
+if test $status -ne 0
+  cd $working_dir
+  exit 4
+end
+
+curl  --silent --fail --show-error \
+      --header "Authorization: Token token=$PAGERDUTY_TOKEN" \
+      --header "Content-type: application/json" \
+      --request DELETE \
+      https://telusdigital.pagerduty.com/api/v1/services/$service_id/email_filters/$default_email_id > $working_dir/default_email_deletion.response
+
+if test $status -ne 0
+  cd $working_dir
+  exit 5
+end
+
+curl  --silent --fail --show-error \
+      --header "Authorization: Token token=$PAGERDUTY_TOKEN" \
+      --header "Content-type: application/json" \
+      --request POST \
+      --data "{
+                'webhook': {
+                  'url': 'https://hooks.slack.com/services/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',
+                  'name': 'Slack for #skynet',
+                  'webhook_object': {
+                      'type': 'service',
+                      'id': '$service_id'
+                  }
+                }
+              }" \
+      "https://telusdigital.pagerduty.com/api/v1/webhooks" > $working_dir/webhook.response
+
+if test $status -ne 0
+  cd $working_dir
+  exit 6
+end
